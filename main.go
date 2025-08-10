@@ -81,6 +81,7 @@ type options struct {
 	noIDNA         bool
 	httpEqHttps    bool
 	version        bool
+	verbose        bool
 }
 
 type stats struct {
@@ -723,6 +724,29 @@ func process(o *options, input io.Reader, repsOut io.Writer, clustersOut io.Writ
 	lines := make(chan string, o.parallel*4)
 	var wg sync.WaitGroup
 
+	// periodic progress logger
+	var progressDone chan struct{}
+	if o.verbose && !o.quiet {
+		progressDone = make(chan struct{})
+		go func() {
+			t := time.NewTicker(1 * time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-progressDone:
+					return
+				case <-t.C:
+					fmt.Fprintf(os.Stderr, "progress lines=%d parsed=%d skipped=%d clusters=%d merged=%d\n",
+						atomic.LoadInt64(&st.linesRead),
+						atomic.LoadInt64(&st.linesParsed),
+						atomic.LoadInt64(&st.linesSkipped),
+						atomic.LoadInt64(&st.clusters),
+						atomic.LoadInt64(&st.merged))
+				}
+			}
+		}()
+	}
+
 	worker := func() {
 		defer wg.Done()
 		for l := range lines {
@@ -765,9 +789,15 @@ func process(o *options, input io.Reader, repsOut io.Writer, clustersOut io.Writ
 
 	// Emit reps
 	if err := emitOutputs(index, repsOut, clustersOut); err != nil {
+		if progressDone != nil {
+			close(progressDone)
+		}
 		return st, err
 	}
 
+	if progressDone != nil {
+		close(progressDone)
+	}
 	return st, nil
 }
 
@@ -888,6 +918,8 @@ func parseFlags() *options {
 	flag.BoolVar(&o.noIDNA, "no-idna", false, "Do not punycode/IDNA-normalize hostnames")
 	flag.BoolVar(&o.httpEqHttps, "http-eq-https", false, "Treat http and https as equivalent for similarity scoring")
 	flag.BoolVar(&o.version, "version", false, "Print version and exit")
+	flag.BoolVar(&o.verbose, "v", false, "Enable verbose progress logging")
+	flag.BoolVar(&o.verbose, "verbose", false, "Enable verbose progress logging")
 	flag.Parse()
 
 	o.mode = modeType(strings.ToLower(mode))
