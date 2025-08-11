@@ -86,8 +86,8 @@ func TestHybridClusteringMerges(t *testing.T) {
 	var total int
 	for _, sh := range index.shards {
 		sh.Lock()
-		for _, list := range sh.buckets {
-			total += len(list)
+		for _, bs := range sh.buckets {
+			total += len(bs.clusters)
 		}
 		sh.Unlock()
 	}

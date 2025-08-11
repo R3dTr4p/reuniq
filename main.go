@@ -95,6 +95,7 @@ type stats struct {
 type urlInfo struct {
 	raw        string
 	norm       string
+	canonKey   string
 	scope      string
 	bucket     string
 	structSig  string
@@ -114,11 +115,16 @@ type cluster struct {
 
 type shard struct {
 	sync.Mutex
-	buckets map[string][]*cluster // key: bucket string
+	buckets map[string]*bucketState // key: bucket string
 }
 
 type shardedIndex struct {
 	shards []*shard
+}
+
+type bucketState struct {
+	clusters []*cluster
+	byStruct map[string]*cluster
 }
 
 func newShardedIndex(numShards int) *shardedIndex {
@@ -127,7 +133,7 @@ func newShardedIndex(numShards int) *shardedIndex {
 	}
 	s := &shardedIndex{shards: make([]*shard, numShards)}
 	for i := 0; i < numShards; i++ {
-		s.shards[i] = &shard{buckets: make(map[string][]*cluster)}
+		s.shards[i] = &shard{buckets: make(map[string]*bucketState)}
 	}
 	return s
 }
@@ -149,16 +155,35 @@ func (s *shardedIndex) addOrMerge(u *urlInfo, o *options, st *stats, wantMembers
 	sh.Lock()
 	defer sh.Unlock()
 
-	list := sh.buckets[u.bucket]
+	bs := sh.buckets[u.bucket]
+	if bs == nil {
+		bs = &bucketState{byStruct: make(map[string]*cluster)}
+		sh.buckets[u.bucket] = bs
+	}
 
 	// Try merge into existing clusters in the same bucket
-	for _, c := range list {
-		if shouldMerge(u, c.rep, o) {
+	// Fast path: exact structSig match (only in modes where structure equality is a criterion)
+	if (o.mode == modeHybrid || o.mode == modeStruct) && u.structSig != "" {
+		if c, ok := bs.byStruct[u.structSig]; ok {
 			atomic.AddInt64(&st.merged, 1)
-			// Update representative according to policy
 			c.rep = chooseRepresentative(c.rep, u, o.keep)
 			if wantMembers {
 				c.members = append(c.members, u)
+			}
+			return true
+		}
+	}
+	// Fallback: scan clusters for simhash/canonical proximity when enabled
+	for _, c := range bs.clusters {
+		if shouldMerge(u, c.rep, o) {
+			atomic.AddInt64(&st.merged, 1)
+			c.rep = chooseRepresentative(c.rep, u, o.keep)
+			if wantMembers {
+				c.members = append(c.members, u)
+			}
+			// If structSig match just occurred via shouldMerge (unlikely since map missed), index it now
+			if (o.mode == modeHybrid || o.mode == modeStruct) && u.structSig == c.rep.structSig {
+				bs.byStruct[u.structSig] = c
 			}
 			return true
 		}
@@ -168,7 +193,11 @@ func (s *shardedIndex) addOrMerge(u *urlInfo, o *options, st *stats, wantMembers
 	if wantMembers {
 		newc.members = append(newc.members, u)
 	}
-	sh.buckets[u.bucket] = append(list, newc)
+	bs.clusters = append(bs.clusters, newc)
+	// Index by struct signature for fast future merges
+	if (o.mode == modeHybrid || o.mode == modeStruct) && u.structSig != "" {
+		bs.byStruct[u.structSig] = newc
+	}
 	atomic.AddInt64(&st.clusters, 1)
 	return false
 }
@@ -237,7 +266,7 @@ func shouldMerge(a *urlInfo, rep *urlInfo, o *options) bool {
 	case modeExact:
 		return a.norm == rep.norm
 	case modeCanonical:
-		return canonicalComparable(a.norm, o.httpEqHttps) == canonicalComparable(rep.norm, o.httpEqHttps)
+		return a.canonKey == rep.canonKey
 	case modeStruct:
 		// Jaccard similarity on struct token sets
 		aSet := a.structSet
@@ -254,7 +283,7 @@ func shouldMerge(a *urlInfo, rep *urlInfo, o *options) bool {
 			return true
 		}
 		// optional canonical tie-break
-		return canonicalComparable(a.norm, o.httpEqHttps) == canonicalComparable(rep.norm, o.httpEqHttps)
+		return a.canonKey == rep.canonKey
 	default:
 		return false
 	}
@@ -443,9 +472,10 @@ func matchAny(s string, patterns []string) bool {
 
 // Struct signature and tokenization
 var (
-	reDigits    = regexp.MustCompile(`\d+`)
-	reUUID      = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
-	reHexLong   = regexp.MustCompile(`\b[0-9a-fA-F]{8,}\b`)
+	reDigits = regexp.MustCompile(`\d+`)
+	reUUID   = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
+	// Treat only long hex-like blobs as placeholders to avoid over-matching small alphanumerics like abc123def
+	reHexLong   = regexp.MustCompile(`\b[0-9a-fA-F]{12,}\b`)
 	reBase64ish = regexp.MustCompile(`[-_A-Za-z0-9]{16,}={0,2}`)
 	reDateLike  = regexp.MustCompile(`\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\b`)
 	reTS        = regexp.MustCompile(`\b1[5-9]\d{8,}\b`)
@@ -477,11 +507,20 @@ func buildURLInfo(raw string, o *options, seeded bool) (*urlInfo, error) {
 	firstSeg := firstPathSegment(u.Path)
 	bucket := scope + "|" + firstSeg
 
-	// struct signature and set
+	// struct signature and optional set
 	structSig, structSet, depth := structSignature(u, o)
+	if o.mode != modeStruct {
+		structSet = nil
+	}
 
-	// simhash
-	sh64, hi, lo := computeSimhash(u, o)
+	// Precompute canonical comparison key once
+	canonKey := canonicalComparable(norm, o.httpEqHttps)
+
+	// Simhash only when needed
+	var sh64, hi, lo uint64
+	if o.mode == modeSimhash || o.mode == modeHybrid {
+		sh64, hi, lo = computeSimhash(u, o)
+	}
 
 	paramCount := 0
 	if q := u.Query(); len(q) > 0 {
@@ -493,6 +532,7 @@ func buildURLInfo(raw string, o *options, seeded bool) (*urlInfo, error) {
 	return &urlInfo{
 		raw:        raw,
 		norm:       norm,
+		canonKey:   canonKey,
 		scope:      scope,
 		bucket:     bucket,
 		structSig:  structSig,
@@ -631,7 +671,10 @@ func computeSimhash(u *url.URL, o *options) (uint64, uint64, uint64) {
 	}
 
 	v := make([]int, 64)
-	v2 := make([]int, 64)
+	var v2 []int
+	if o.simhashBits == 128 {
+		v2 = make([]int, 64)
+	}
 	for _, t := range tokens {
 		h := fnv64a(t)
 		for i := 0; i < 64; i++ {
@@ -641,34 +684,38 @@ func computeSimhash(u *url.URL, o *options) (uint64, uint64, uint64) {
 				v[i]--
 			}
 		}
-		// second hash with salt via sha1
-		sh := sha1.Sum([]byte("s:" + t))
-		var h2 uint64
-		for i := 0; i < 8; i++ {
-			h2 = (h2 << 8) | uint64(sh[i])
-		}
-		for i := 0; i < 64; i++ {
-			if (h2>>uint(i))&1 == 1 {
-				v2[i]++
-			} else {
-				v2[i]--
+		if v2 != nil {
+			// second hash with salt via sha1
+			sh := sha1.Sum([]byte("s:" + t))
+			var h2 uint64
+			for i := 0; i < 8; i++ {
+				h2 = (h2 << 8) | uint64(sh[i])
+			}
+			for i := 0; i < 64; i++ {
+				if (h2>>uint(i))&1 == 1 {
+					v2[i]++
+				} else {
+					v2[i]--
+				}
 			}
 		}
 	}
 	var out1 uint64
-	var out2 uint64
 	for i := 0; i < 64; i++ {
 		if v[i] >= 0 {
 			out1 |= 1 << uint(i)
 		}
+	}
+	if v2 == nil {
+		return out1, 0, 0
+	}
+	var out2 uint64
+	for i := 0; i < 64; i++ {
 		if v2[i] >= 0 {
 			out2 |= 1 << uint(i)
 		}
 	}
-	if o.simhashBits == 128 {
-		return out1, out1, out2
-	}
-	return out1, 0, 0
+	return out1, out1, out2
 }
 
 func fnv64a(s string) uint64 {
@@ -836,8 +883,8 @@ func emitOutputs(index *shardedIndex, repsOut io.Writer, clustersOut io.Writer) 
 	}
 	for _, sh := range index.shards {
 		sh.Lock()
-		for _, list := range sh.buckets {
-			for _, c := range list {
+		for _, bs := range sh.buckets {
+			for _, c := range bs.clusters {
 				if _, err := bufReps.WriteString(c.rep.norm + "\n"); err != nil {
 					sh.Unlock()
 					return err
