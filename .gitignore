@@ -2,3 +2,5 @@ reuniq
 *.exe
 *.out
 *.test 
+# local notes
+todo.md
