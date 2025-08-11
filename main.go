@@ -97,6 +97,7 @@ type options struct {
 	dropExts       []string
 	dropB64ish     bool
 	dropGibberish  bool
+	presetClean    bool
 }
 
 type stats struct {
@@ -1057,6 +1058,9 @@ func parseFlags() *options {
 	flag.StringVar(&drops, "drop-ext", drops, "Comma-separated file extensions to drop when they are the path suffix (e.g., gif,jpg,png)")
 	flag.BoolVar(&o.dropB64ish, "drop-b64ish", false, "Drop URLs whose path contains base64-ish long tokens")
 	flag.BoolVar(&o.dropGibberish, "drop-gibberish", false, "Drop URLs whose path contains long alnum+ tokens (likely gibberish)")
+	// Preset for quick use with recommended defaults (generic)
+	flag.BoolVar(&o.presetClean, "preset-clean", false, "Apply recommended defaults for large recon lists (alias for a set of flags)")
+	flag.BoolVar(&o.presetClean, "preset", false, "Alias of --preset-clean (recommended defaults)")
 	flag.Parse()
 
 	o.mode = modeType(strings.ToLower(mode))
@@ -1082,6 +1086,21 @@ func parseFlags() *options {
 	}
 	if o.parallel < 1 {
 		o.parallel = 1
+	}
+
+	// Apply preset defaults (overrides conflicting flags)
+	if o.presetClean {
+		o.mode = modeHybrid
+		o.normalize = normStrict
+		o.domainScope = scopeRegistrable
+		o.excludeParams = []string{"utm_*", "gclid", "fbclid", "_ga", "_gid", "ref", "sid", "session", "phpsessid", "JSESSIONID"}
+		o.onlyParams = nil
+		o.httpEqHttps = true
+		o.parallel = runtime.NumCPU()
+		o.bufferBytes = 1 << 22
+		o.dropExts = []string{"gif"}
+		o.dropB64ish = true
+		o.dropGibberish = true
 	}
 	return o
 }

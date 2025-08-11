@@ -13,7 +13,17 @@ Recon data is messy: tracking params, random IDs, dates, UUIDs, base64-ish blobs
 
 ## TL;DR (the command I usually use)
 
-If you don’t want to read everything, here’s a solid default that works great for big lists:
+If you don’t want to read everything, here’s a solid default that works great for big lists.
+Use the preset flag for brevity:
+
+```bash
+# Preset alias (same behavior as the long form below)
+reuniq --preset-clean -i big_urls.txt > unique.txt
+# or shorter alias
+reuniq --preset -i big_urls.txt > unique.txt
+```
+
+Equivalent long form:
 
 ```bash
 reuniq -i big_urls.txt -m hybrid -n strict -d registrable \
