@@ -116,6 +116,37 @@ Use them to cheaply shrink the problem size before clustering.
 - `registrable` (default): cluster within eTLD+1 (via publicsuffix)
 - `host`: strict FQDN match
 
+## Example: input → output
+
+Given this input list:
+
+```text
+https://EXAMPLE.com:443/a/b/123?utm_source=tw&lang=en
+https://example.com/a/b/456?lang=en
+http://example.com/a/b/789?lang=en
+https://example.com/a/b/123?lang=en#frag
+https://api.example.com/a/b/123?lang=en
+https://example.com/a/b/abc123def?lang=en
+https://example.com/a/b/2024-10-05?lang=en
+https://example.com/a/b/123?lang=en&a=1&a=2
+https://example.com/a/b/123?lang=en&a=2&a=1
+```
+
+Running:
+
+```bash
+reuniq -m hybrid -n strict -d registrable --http-eq-https
+```
+
+Produces representatives like:
+
+```text
+https://example.com/a/b/{num}?lang=en
+https://api.example.com/a/b/{num}?lang=en
+https://example.com/a/b/{date}?lang=en
+https://example.com/a/b/abc{num}def?lang=en
+```
+
 ## Performance tips
 
 - Prefer `-m hybrid -n strict -d registrable`
@@ -123,27 +154,6 @@ Use them to cheaply shrink the problem size before clustering.
 - Increase buffer for very long lines: `-B $((1<<22))` or larger
 - Pre-filter aggressively on noisy corpora: `--drop-ext`, `--drop-b64ish`, `--drop-gibberish`
 - If you only need byte/canonical dedupe: `-m canonical -n strict` for max speed/min memory
-
-## Examples
-
-```bash
-# Simple: stdin → stdout
-cat wayback.txt | reuniq -m hybrid -n strict -d registrable > unique.txt
-
-# Write cluster blocks (rep + members)
-reuniq -i wayback.txt -C clusters.txt --http-eq-https --threshold 0.12
-
-# Aggressive pre-filtering for huge lists
-reuniq -i big.txt -m hybrid -n strict -d registrable \
-  --drop-ext gif,jpg,png,css,js --drop-b64ish --drop-gibberish \
-  -p $(nproc) -B $((1<<22)) > reps.txt
-```
-
-## Output
-
-- Default: representatives only (one per line)
-- With `-C`: cluster blocks (rep on first line, then members, then a blank line)
-- Stats printed to stderr unless `--quiet`
 
 ## Benchmarks
 
@@ -162,9 +172,8 @@ Your mileage will vary by dataset, CPU, and filtering. The pipeline is streaming
 
 ## Credits
 
-- Concept and field input from bug bounty hunter **R3dTr4p**
+- Made by [R3dTr4p](https://x.com/R3dTr4p).
 - Implementation in Go ≥1.21
 
-## License
 
-MIT 
+Feel free to collaborate with PRs =D
