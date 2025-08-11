@@ -82,6 +82,9 @@ type options struct {
 	httpEqHttps    bool
 	version        bool
 	verbose        bool
+	dropExts       []string
+	dropB64ish     bool
+	dropGibberish  bool
 }
 
 type stats struct {
@@ -475,10 +478,11 @@ var (
 	reDigits = regexp.MustCompile(`\d+`)
 	reUUID   = regexp.MustCompile(`(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`)
 	// Treat only long hex-like blobs as placeholders to avoid over-matching small alphanumerics like abc123def
-	reHexLong   = regexp.MustCompile(`\b[0-9a-fA-F]{12,}\b`)
-	reBase64ish = regexp.MustCompile(`[-_A-Za-z0-9]{16,}={0,2}`)
-	reDateLike  = regexp.MustCompile(`\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\b`)
-	reTS        = regexp.MustCompile(`\b1[5-9]\d{8,}\b`)
+	reHexLong       = regexp.MustCompile(`\b[0-9a-fA-F]{12,}\b`)
+	reBase64ish     = regexp.MustCompile(`[-_A-Za-z0-9]{16,}={0,2}`)
+	reAlnumPlusLong = regexp.MustCompile(`[A-Za-z0-9+]{16,}(?:={0,2})?`)
+	reDateLike      = regexp.MustCompile(`\b20\d{2}[-/]\d{1,2}[-/]\d{1,2}\b`)
+	reTS            = regexp.MustCompile(`\b1[5-9]\d{8,}\b`)
 )
 
 func buildURLInfo(raw string, o *options, seeded bool) (*urlInfo, error) {
@@ -807,6 +811,11 @@ func process(o *options, input io.Reader, repsOut io.Writer, clustersOut io.Writ
 				atomic.AddInt64(&st.linesSkipped, 1)
 				continue
 			}
+			// Drop filters
+			if shouldDropURL(ui, o) {
+				atomic.AddInt64(&st.linesSkipped, 1)
+				continue
+			}
 			atomic.AddInt64(&st.linesParsed, 1)
 			index.addOrMerge(ui, o, &st, wantMembers)
 		}
@@ -848,6 +857,67 @@ func process(o *options, input io.Reader, repsOut io.Writer, clustersOut io.Writ
 	return st, nil
 }
 
+func shouldDropURL(ui *urlInfo, o *options) bool {
+	// Drop by path extension (case-insensitive), applied to the path only (not query)
+	if len(o.dropExts) > 0 {
+		lp := strings.ToLower(uiPath(ui))
+		for _, ext := range o.dropExts {
+			e := strings.ToLower(ext)
+			if !strings.HasPrefix(e, ".") {
+				e = "." + e
+			}
+			if strings.HasSuffix(lp, e) {
+				return true
+			}
+		}
+	}
+	// Drop b64ish or gibberish-like segments in path if opted-in
+	if o.dropB64ish || o.dropGibberish {
+		segs := strings.Split(strings.Trim(uiPath(ui), "/"), "/")
+		for _, s := range segs {
+			if s == "" {
+				continue
+			}
+			if o.dropB64ish && reBase64ish.MatchString(s) {
+				return true
+			}
+			if o.dropGibberish && reAlnumPlusLong.MatchString(s) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func uiPath(ui *urlInfo) string {
+	// ui.norm is a full URL string; parse path cheaply
+	// We also stored structSig and pathDepth, but to get the raw path we reparse minimal
+	// For performance, attempt to slice out path by looking for '://' then next '/'
+	s := ui.norm
+	// find scheme sep
+	i := strings.Index(s, "://")
+	if i == -1 {
+		// best effort
+		u, err := url.Parse(s)
+		if err != nil {
+			return ""
+		}
+		return u.Path
+	}
+	// find first '/'
+	j := strings.IndexByte(s[i+3:], '/')
+	if j == -1 {
+		return "/"
+	}
+	// path starts at i+3+j
+	k := i + 3 + j
+	// up to '?' or end
+	if q := strings.IndexByte(s[k:], '?'); q != -1 {
+		return s[k : k+q]
+	}
+	return s[k:]
+}
+
 func feedReader(r io.Reader, o *options, index *shardedIndex, st *stats, wantMembers bool, seeded bool) error {
 	br := bufio.NewReaderSize(r, o.bufferBytes)
 	for {
@@ -857,8 +927,12 @@ func feedReader(r io.Reader, o *options, index *shardedIndex, st *stats, wantMem
 			if l != "" && !strings.HasPrefix(l, "#") {
 				ui, e := buildURLInfo(l, o, seeded)
 				if e == nil {
-					index.addOrMerge(ui, o, st, wantMembers)
-					atomic.AddInt64(&st.linesParsed, 1)
+					if !shouldDropURL(ui, o) {
+						index.addOrMerge(ui, o, st, wantMembers)
+						atomic.AddInt64(&st.linesParsed, 1)
+					} else {
+						atomic.AddInt64(&st.linesSkipped, 1)
+					}
 				} else {
 					atomic.AddInt64(&st.linesSkipped, 1)
 				}
@@ -967,6 +1041,10 @@ func parseFlags() *options {
 	flag.BoolVar(&o.version, "version", false, "Print version and exit")
 	flag.BoolVar(&o.verbose, "v", false, "Enable verbose progress logging")
 	flag.BoolVar(&o.verbose, "verbose", false, "Enable verbose progress logging")
+	drops := ""
+	flag.StringVar(&drops, "drop-ext", drops, "Comma-separated file extensions to drop when they are the path suffix (e.g., gif,jpg,png)")
+	flag.BoolVar(&o.dropB64ish, "drop-b64ish", false, "Drop URLs whose path contains base64-ish long tokens")
+	flag.BoolVar(&o.dropGibberish, "drop-gibberish", false, "Drop URLs whose path contains long alnum+ tokens (likely gibberish)")
 	flag.Parse()
 
 	o.mode = modeType(strings.ToLower(mode))
@@ -986,6 +1064,9 @@ func parseFlags() *options {
 	}
 	if only != "" {
 		o.onlyParams = splitCSV(only)
+	}
+	if drops != "" {
+		o.dropExts = splitCSV(drops)
 	}
 	if o.parallel < 1 {
 		o.parallel = 1
