@@ -165,15 +165,13 @@ go test -bench=. -benchmem
 
 Your mileage will vary by dataset, CPU, and filtering. The pipeline is streaming and sharded; memory is driven by the number of active clusters per bucket.
 
-## Notes for accuracy
+## Contributing
 
-- Normalization and structural placeholders are designed to keep structural variety while collapsing obvious noise.
-- You can bias representatives via `-S/--seed` if you have “known-good” URLs you prefer to keep.
+PRs welcome. If you have real-world corpora, tuning ideas, or feature requests, please open an issue or a pull request.
 
 ## Credits
 
 - Made by [R3dTr4p](https://x.com/R3dTr4p).
 - Implementation in Go ≥1.21
-
 
 Feel free to collaborate with PRs =D
