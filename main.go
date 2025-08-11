@@ -1101,6 +1101,7 @@ func parseFlags() *options {
 		o.dropExts = []string{"gif"}
 		o.dropB64ish = true
 		o.dropGibberish = true
+		o.verbose = true
 	}
 	return o
 }

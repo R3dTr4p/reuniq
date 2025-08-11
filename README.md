@@ -26,7 +26,7 @@ reuniq --preset -i big_urls.txt > unique.txt
 Equivalent long form:
 
 ```bash
-reuniq -i big_urls.txt -m hybrid -n strict -d registrable \
+reuniq -i big_urls.txt -v -m hybrid -n strict -d registrable \
   -x "utm_*,gclid,fbclid,_ga,_gid,ref,sid,session,phpsessid,JSESSIONID" \
   --http-eq-https -p $(nproc) -B $((1<<22)) \
   --drop-ext gif --drop-b64ish --drop-gibberish \
