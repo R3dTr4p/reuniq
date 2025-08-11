@@ -98,6 +98,7 @@ type options struct {
 	dropB64ish     bool
 	dropGibberish  bool
 	presetClean    bool
+	progressEveryS int
 }
 
 type stats struct {
@@ -793,19 +794,37 @@ func process(o *options, input io.Reader, repsOut io.Writer, clustersOut io.Writ
 	if o.verbose && !o.quiet {
 		progressDone = make(chan struct{})
 		go func() {
-			t := time.NewTicker(1 * time.Second)
+			interval := time.Duration(o.progressEveryS)
+			if interval <= 0 {
+				interval = 1
+			}
+			t := time.NewTicker(interval * time.Second)
 			defer t.Stop()
+			prevLen := 0
 			for {
 				select {
 				case <-progressDone:
+					// finish the in-place line
+					fmt.Fprint(os.Stderr, "\n")
 					return
 				case <-t.C:
-					fmt.Fprintf(os.Stderr, "progress lines=%d parsed=%d skipped=%d clusters=%d merged=%d\n",
+					msg := fmt.Sprintf("progress lines=%d parsed=%d skipped=%d clusters=%d merged=%d",
 						atomic.LoadInt64(&st.linesRead),
 						atomic.LoadInt64(&st.linesParsed),
 						atomic.LoadInt64(&st.linesSkipped),
 						atomic.LoadInt64(&st.clusters),
 						atomic.LoadInt64(&st.merged))
+					// overwrite same line using carriage return
+					padding := 0
+					if prevLen > len(msg) {
+						padding = prevLen - len(msg)
+					}
+					if padding > 0 {
+						fmt.Fprintf(os.Stderr, "\r%s%s", msg, strings.Repeat(" ", padding))
+					} else {
+						fmt.Fprintf(os.Stderr, "\r%s", msg)
+					}
+					prevLen = len(msg)
 				}
 			}
 		}()
@@ -1054,6 +1073,7 @@ func parseFlags() *options {
 	flag.BoolVar(&o.version, "version", false, "Print version and exit")
 	flag.BoolVar(&o.verbose, "v", false, "Enable verbose progress logging")
 	flag.BoolVar(&o.verbose, "verbose", false, "Enable verbose progress logging")
+	flag.IntVar(&o.progressEveryS, "progress-interval", 1, "Progress update interval in seconds (with -v)")
 	drops := ""
 	flag.StringVar(&drops, "drop-ext", drops, "Comma-separated file extensions to drop when they are the path suffix (e.g., gif,jpg,png)")
 	flag.BoolVar(&o.dropB64ish, "drop-b64ish", false, "Drop URLs whose path contains base64-ish long tokens")
@@ -1102,6 +1122,9 @@ func parseFlags() *options {
 		o.dropB64ish = true
 		o.dropGibberish = true
 		o.verbose = true
+		if o.progressEveryS <= 0 {
+			o.progressEveryS = 1
+		}
 	}
 	return o
 }
