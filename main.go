@@ -25,6 +25,18 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
+const banner = `  _____                  _       
+ |  __ \                (_)      
+ | |__) |___ _   _ _ __  _  __ _ 
+ |  _  // _ \ | | | '_ \| |/ _' |
+ | | \ \  __/ |_| | | | | | (_| |
+ |_|  \_\___|\__,_|_| |_|_|\__, |
+                              | |
+                              |_| 
+----------------------------------------
+Made by: R3dTr4p
+`
+
 const (
 	defaultThresholdSimhash = 0.12
 	defaultThresholdStruct  = 0.30
@@ -1101,6 +1113,10 @@ func main() {
 	if o.version {
 		fmt.Println("reuniq v0.1.0")
 		return
+	}
+
+	if !o.quiet {
+		fmt.Fprint(os.Stderr, banner)
 	}
 
 	// If a positional file is provided, prefer it for input unless -i specified

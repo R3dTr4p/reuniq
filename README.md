@@ -1,20 +1,39 @@
 # reuniq
 
-A high-performance Go CLI to deduplicate similar URLs from massive lists for bug bounty recon.
+A fast, streaming CLI to deduplicate similar URLs from massive lists. Built for bug bounty recon and large-scale data hygiene.
+Made by [R3dTr4p](https://x.com/R3dTr4p).
 
-- Input: one URL per line (stdin or a file)
+- Input: one URL per line (stdin or file)
 - Output: one representative URL per “similarity cluster”
-- Scales to millions of lines with low memory
+- Scales to millions of lines with bounded memory
+
+## Why
+
+Recon data is messy: tracking params, random IDs, dates, UUIDs, base64-ish blobs, and a ton of near-duplicates that waste your time. reuniq normalizes and clusters URLs so you keep one representative per group, without losing structural variety that matters for attack surface.
+
+## TL;DR (the command I usually use)
+
+If you don’t want to read everything, here’s a solid default that works great for big lists:
+
+```bash
+reuniq -i big_urls.txt -m hybrid -n strict -d registrable \
+  -x "utm_*,gclid,fbclid,_ga,_gid,ref,sid,session,phpsessid,JSESSIONID" \
+  --http-eq-https -p $(nproc) -B $((1<<22)) \
+  --drop-ext gif --drop-b64ish --drop-gibberish \
+  > unique.txt
+```
+
+- Hybrid mode: buckets by domain + first path segment, merges by structure and SimHash
+- Strict normalization: sort params, drop fragments, IDNA host, resolve dot segments
+- Drop common tracking params; treat http/https as equivalent
+- Filter out paths ending in .gif (but keep ?x=.gif in queries), and obvious gibberish/base64-ish path segments
+- Use all CPU cores, large read buffer for very long lines
 
 ## Install
 
 ```bash
 go install ./...
-```
-
-Or build locally:
-
-```bash
+# or
 go build -o reuniq
 ```
 
@@ -24,53 +43,128 @@ go build -o reuniq
 reuniq [flags] [file]
 ```
 
-Flags:
-- `-i, --input FILE` Input file (default: stdin)
-- `-o, --output FILE` Output file (default: stdout)
-- `-m, --mode MODE` Similarity mode: exact|canonical|struct|simhash|hybrid (default: hybrid)
-- `-t, --threshold FLOAT` Similarity threshold (mode-dependent, default 0.12 for simhash/Hamming, 0.3 Jaccard)
-- `-n, --normalize LEVEL` Normalization: none|loose|strict (default: strict)
-- `-k, --keep POLICY` Which URL to keep per cluster: first|shortest|longest|richest|lexi (default: richest)
-- `-d, --domain-scope SCOPE` all|registrable|host (default: registrable)
-- `-p, --parallel INT` Worker goroutines (default: number of CPUs)
-- `-B, --buffer-bytes INT` Line buffer size (default: 1<<20)
-- `-x, --exclude-params LIST` Comma-separated params to drop (e.g., utm_*, gclid, fbclid)
-- `-X, --only-params LIST` Only keep these params (whitelist); overrides exclude
-- `-q, --quiet` Suppress stats to stderr
-- `-C, --clusters FILE` Also write clusters (rep + members) to FILE (newline-separated blocks)
-- `-S, --seed FILE` Preload known URLs to bias cluster representatives
-- `--simhash-bits INT` 64 or 128 (default: 64)
-- `--simhash-shingle INT` Token shingle size (default: 3)
-- `--struct-weight FLOAT` Weight of structural vs query similarity in hybrid (default: 0.6)
-- `--no-idna` Do not punycode/IDNA-normalize hostnames
-- `--http-eq-https` Treat http and https as equivalent for similarity scoring
-- `--version`
-- `--help`
+Key flags:
+- Input/Output
+  - `-i, --input FILE` input (default: stdin)
+  - `-o, --output FILE` output (default: stdout)
+  - `-C, --clusters FILE` also write clusters (rep + members) to file
+- Modes
+  - `-m, --mode MODE` `exact|canonical|struct|simhash|hybrid` (default: `hybrid`)
+  - `-t, --threshold FLOAT` similarity threshold (mode-dependent; default 0.12 for SimHash, 0.30 for Jaccard)
+- Normalization
+  - `-n, --normalize LEVEL` `none|loose|strict` (default: `strict`)
+  - `-x, --exclude-params LIST` drop params (wildcards supported)
+  - `-X, --only-params LIST` keep only these params (overrides exclude)
+  - `--no-idna` skip IDNA/punycode on hosts
+  - `--http-eq-https` treat http and https as equivalent
+- Scoping & performance
+  - `-d, --domain-scope SCOPE` `all|registrable|host` (default: `registrable`)
+  - `-p, --parallel INT` worker goroutines (default: `nproc`)
+  - `-B, --buffer-bytes INT` line buffer (default: `1<<20`)
+- Similarity tuning
+  - `--simhash-bits INT` 64 or 128 (default: 64)
+  - `--simhash-shingle INT` token shingle size (default: 3)
+- Pre-filters (path-based)
+  - `--drop-ext LIST` comma-separated extensions to drop when they are the PATH suffix (e.g., `gif,jpg,png`)
+  - `--drop-b64ish` drop URLs whose PATH contains base64-ish long tokens
+  - `--drop-gibberish` drop URLs whose PATH contains long alnum+ tokens (very likely random/gibberish)
+- Misc
+  - `-q, --quiet` suppress stats
+  - `-S, --seed FILE` preload known URLs to bias cluster representatives
+  - `--version`, `--help`, `-v/--verbose`
+
+## What “similar” means
+
+- exact: byte equality after chosen normalization
+- canonical: RFC-ish canonicalization + param sorting/removal → exact match on canonical form
+- struct: equality of shape ignoring volatile parts
+  - Path placeholders: digits → `{num}`, UUIDs → `{uuid}`, hex blobs → `{hex}`, date-like → `{date}`, base64ish → `{b64}`
+  - Query compared by names; values normalized similarly
+  - Jaccard on path tokens + param names
+- simhash: tokenize path segments, param names and short values; compare using Hamming distance
+- hybrid (default): bucket by `(registrable domain, first path segment)` then merge via:
+  1) Struct signature equality (fast path)
+  2) SimHash + Hamming threshold
+  3) Optional canonical tie-break
+
+## Normalization levels
+
+- none: keep as-is
+- loose:
+  - lowercase scheme/host, remove default ports, strip fragment
+  - collapse slashes, remove trailing slash (except root)
+  - sort query params, drop empties, percent-decode unreserved
+- strict (default): loose +
+  - resolve `.` and `..`, IDNA/punycode host
+  - normalize percent-encoding and IPv6 brackets
+  - path case-sensitive; host case-insensitive
+  - drop tracking params via `--exclude-params` (wildcards supported)
+
+## Path filters (fast noise cut)
+
+These apply only to the URL path (not query string), so `?file=logo.gif` is kept, while `/images/logo.gif` is dropped.
+
+- `--drop-ext gif,jpg,png,css,js` → drop static/resource-y paths
+- `--drop-b64ish` → drop paths containing base64-ish segments
+- `--drop-gibberish` → drop paths with long alnum+ noise (e.g., `wEWCgL...`)
+
+Use them to cheaply shrink the problem size before clustering.
+
+## Domain scoping
+
+- `all`: cross-domain clustering
+- `registrable` (default): cluster within eTLD+1 (via publicsuffix)
+- `host`: strict FQDN match
+
+## Performance tips
+
+- Prefer `-m hybrid -n strict -d registrable`
+- Use all cores: `-p $(nproc)`
+- Increase buffer for very long lines: `-B $((1<<22))` or larger
+- Pre-filter aggressively on noisy corpora: `--drop-ext`, `--drop-b64ish`, `--drop-gibberish`
+- If you only need byte/canonical dedupe: `-m canonical -n strict` for max speed/min memory
 
 ## Examples
 
 ```bash
-cat wayback.txt | reuniq -m hybrid -n strict -d registrable -x "utm_*,gclid,fbclid,_ga" -p 8 > unique.txt
+# Simple: stdin → stdout
+cat wayback.txt | reuniq -m hybrid -n strict -d registrable > unique.txt
+
+# Write cluster blocks (rep + members)
 reuniq -i wayback.txt -C clusters.txt --http-eq-https --threshold 0.12
+
+# Aggressive pre-filtering for huge lists
+reuniq -i big.txt -m hybrid -n strict -d registrable \
+  --drop-ext gif,jpg,png,css,js --drop-b64ish --drop-gibberish \
+  -p $(nproc) -B $((1<<22)) > reps.txt
 ```
 
-## Notes
-- Hybrid mode buckets by (registrable domain, first path segment) and merges via struct signature equality and SimHash + Hamming distance.
-- In struct mode, shape-like placeholders identify near-duplicates: digits → {num}, UUIDs → {uuid}, hex → {hex}, date-like → {date}, base64ish → {b64}.
-- Strict normalization resolves dot segments, IDNA-normalizes host, drops tracking params, sorts query params, and removes fragments.
+## Output
 
-## Performance
-- Targets: 1M lines, hybrid, 8 cores: < 30–60s, < 1.5 GB RAM
-- Streaming ingestion with sharded buckets and bounded state per bucket.
-
-## Testing
-
-```bash
-go test ./... -v
-```
+- Default: representatives only (one per line)
+- With `-C`: cluster blocks (rep on first line, then members, then a blank line)
+- Stats printed to stderr unless `--quiet`
 
 ## Benchmarks
 
+Synthetic benchmark on 100k URLs (hybrid, strict, registrable, shingle=3, 64-bit SimHash):
+
 ```bash
 go test -bench=. -benchmem
-``` 
+```
+
+Your mileage will vary by dataset, CPU, and filtering. The pipeline is streaming and sharded; memory is driven by the number of active clusters per bucket.
+
+## Notes for accuracy
+
+- Normalization and structural placeholders are designed to keep structural variety while collapsing obvious noise.
+- You can bias representatives via `-S/--seed` if you have “known-good” URLs you prefer to keep.
+
+## Credits
+
+- Concept and field input from bug bounty hunter **R3dTr4p**
+- Implementation in Go ≥1.21
+
+## License
+
+MIT 
