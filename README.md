@@ -14,7 +14,7 @@ Recon data is messy: tracking params, random IDs, dates, UUIDs, base64-ish blobs
 ## TL;DR (the command I usually use)
 
 If you don’t want to read everything, here’s a solid default that works great for big lists.
-Use the preset flag for brevity:
+Use the preset flag for brevity (defaults to host scope):
 
 ```bash
 # Preset alias (same behavior as the long form below)
@@ -23,10 +23,16 @@ reuniq --preset-clean -i big_urls.txt > unique.txt
 reuniq --preset -i big_urls.txt > unique.txt
 ```
 
+To cluster across subdomains under the same eTLD+1, add:
+
+```bash
+reuniq --preset --registrable-scope -i big_urls.txt > unique.txt
+```
+
 Equivalent long form:
 
 ```bash
-reuniq -i big_urls.txt -v -m hybrid -n strict -d registrable \
+reuniq -i big_urls.txt -m hybrid -n strict -d host \
   -x "utm_*,gclid,fbclid,_ga,_gid,ref,sid,session,phpsessid,JSESSIONID" \
   --http-eq-https -p $(nproc) -B $((1<<22)) \
   --drop-ext gif --drop-b64ish --drop-gibberish \
@@ -68,7 +74,8 @@ Key flags:
   - `--no-idna` skip IDNA/punycode on hosts
   - `--http-eq-https` treat http and https as equivalent
 - Scoping & performance
-  - `-d, --domain-scope SCOPE` `all|registrable|host` (default: `registrable`)
+  - `-d, --domain-scope SCOPE` `all|registrable|host` (default: `host`)
+  - `--registrable-scope` shortcut to set `registrable` (ignored if `-d` is provided)
   - `-p, --parallel INT` worker goroutines (default: `nproc`)
   - `-B, --buffer-bytes INT` line buffer (default: `1<<20`)
 - Similarity tuning
@@ -81,7 +88,8 @@ Key flags:
 - Misc
   - `-q, --quiet` suppress stats
   - `-S, --seed FILE` preload known URLs to bias cluster representatives
-  - `--version`, `--help`, `-v/--verbose`
+  - `-v, --verbose` progress updates (single-line in-place); `--progress-interval N` to change interval
+  - `--version`, `--help`
 
 ## What “similar” means
 

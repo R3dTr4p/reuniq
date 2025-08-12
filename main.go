@@ -73,32 +73,33 @@ const (
 )
 
 type options struct {
-	inputPath      string
-	outputPath     string
-	clustersPath   string
-	seedPath       string
-	mode           modeType
-	threshold      float64
-	normalize      normalizeLevel
-	keep           keepPolicy
-	domainScope    domainScope
-	parallel       int
-	bufferBytes    int
-	excludeParams  []string
-	onlyParams     []string
-	quiet          bool
-	simhashBits    int
-	simhashShingle int
-	structWeight   float64
-	noIDNA         bool
-	httpEqHttps    bool
-	version        bool
-	verbose        bool
-	dropExts       []string
-	dropB64ish     bool
-	dropGibberish  bool
-	presetClean    bool
-	progressEveryS int
+	inputPath       string
+	outputPath      string
+	clustersPath    string
+	seedPath        string
+	mode            modeType
+	threshold       float64
+	normalize       normalizeLevel
+	keep            keepPolicy
+	domainScope     domainScope
+	parallel        int
+	bufferBytes     int
+	excludeParams   []string
+	onlyParams      []string
+	quiet           bool
+	simhashBits     int
+	simhashShingle  int
+	structWeight    float64
+	noIDNA          bool
+	httpEqHttps     bool
+	version         bool
+	verbose         bool
+	dropExts        []string
+	dropB64ish      bool
+	dropGibberish   bool
+	presetClean     bool
+	progressEveryS  int
+	registrableFlag bool
 }
 
 type stats struct {
@@ -1046,9 +1047,9 @@ func parseFlags() *options {
 	keep := string(keepRichest)
 	flag.StringVar(&keep, "k", keep, "Which URL to keep per cluster: first|shortest|longest|richest|lexi (default: richest)")
 	flag.StringVar(&keep, "keep", keep, "Which URL to keep per cluster: first|shortest|longest|richest|lexi (default: richest)")
-	ds := string(scopeRegistrable)
-	flag.StringVar(&ds, "d", ds, "Domain scope: all|registrable|host (default: registrable)")
-	flag.StringVar(&ds, "domain-scope", ds, "Domain scope: all|registrable|host (default: registrable)")
+	ds := string(scopeHost)
+	flag.StringVar(&ds, "d", ds, "Domain scope: all|registrable|host (default: host)")
+	flag.StringVar(&ds, "domain-scope", ds, "Domain scope: all|registrable|host (default: host)")
 	flag.IntVar(&o.parallel, "p", runtime.NumCPU(), "Worker goroutines (default: number of CPUs)")
 	flag.IntVar(&o.parallel, "parallel", runtime.NumCPU(), "Worker goroutines (default: number of CPUs)")
 	flag.IntVar(&o.bufferBytes, "B", 1<<20, "Line buffer size (default: 1<<20)")
@@ -1081,6 +1082,8 @@ func parseFlags() *options {
 	// Preset for quick use with recommended defaults (generic)
 	flag.BoolVar(&o.presetClean, "preset-clean", false, "Apply recommended defaults for large recon lists (alias for a set of flags)")
 	flag.BoolVar(&o.presetClean, "preset", false, "Alias of --preset-clean (recommended defaults)")
+	// Convenience flag to cluster within registrable (eTLD+1) instead of host
+	flag.BoolVar(&o.registrableFlag, "registrable-scope", false, "Cluster within registrable domain (eTLD+1); overrides default host scope unless -d is provided")
 	flag.Parse()
 
 	// Track which flags user actually set
@@ -1099,6 +1102,11 @@ func parseFlags() *options {
 	o.normalize = normalizeLevel(strings.ToLower(norm))
 	o.keep = keepPolicy(strings.ToLower(keep))
 	o.domainScope = domainScope(strings.ToLower(ds))
+
+	// Apply registrable convenience flag only if user didn't explicitly set -d/--domain-scope
+	if o.registrableFlag && !provided("d", "domain-scope") {
+		o.domainScope = scopeRegistrable
+	}
 
 	if o.mode == modeStruct && (o.threshold == 0 || o.threshold == defaultThresholdSimhash) {
 		// default jaccard threshold
@@ -1128,9 +1136,7 @@ func parseFlags() *options {
 		if !provided("n", "normalize") {
 			o.normalize = normStrict
 		}
-		if !provided("d", "domain-scope") {
-			o.domainScope = scopeRegistrable
-		}
+		// Do not change domain scope in preset; rely on defaults or user flags
 		if !provided("x", "exclude-params") && len(o.excludeParams) == 0 {
 			o.excludeParams = []string{"utm_*", "gclid", "fbclid", "_ga", "_gid", "ref", "sid", "session", "phpsessid", "JSESSIONID"}
 		}
