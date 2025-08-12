@@ -63,7 +63,8 @@ Key flags:
 - Input/Output
   - `-i, --input FILE` input (default: stdin)
   - `-o, --output FILE` output (default: stdout)
-  - `-C, --clusters FILE` also write clusters (rep + members) to file
+  - `-C, --clusters FILE` also write clusters (rep + members) to file (newline-separated blocks) — memory heavy on huge lists; may crash due to RAM
+  - `--clusters-pairs FILE` stream cluster membership as `rep\tmember` lines (low memory, recommended for very large inputs)
 - Modes
   - `-m, --mode MODE` `exact|canonical|struct|simhash|hybrid` (default: `hybrid`)
   - `-t, --threshold FLOAT` similarity threshold (mode-dependent; default 0.12 for SimHash, 0.30 for Jaccard)
@@ -131,8 +132,8 @@ Use them to cheaply shrink the problem size before clustering.
 ## Domain scoping
 
 - `all`: cross-domain clustering
-- `registrable` (default): cluster within eTLD+1 (via publicsuffix)
-- `host`: strict FQDN match
+- `registrable`: cluster within eTLD+1 (via publicsuffix)
+- `host` (default): strict FQDN match
 
 ## Example: input → output
 
@@ -167,10 +168,11 @@ https://example.com/a/b/abc{num}def?lang=en
 
 ## Performance tips
 
-- Prefer `-m hybrid -n strict -d registrable`
+- Prefer `-m hybrid -n strict -d host`
 - Use all cores: `-p $(nproc)`
 - Increase buffer for very long lines: `-B $((1<<22))` or larger
 - Pre-filter aggressively on noisy corpora: `--drop-ext`, `--drop-b64ish`, `--drop-gibberish`
+- For huge lists, avoid `-C`; use `--clusters-pairs` instead
 - If you only need byte/canonical dedupe: `-m canonical -n strict` for max speed/min memory
 
 ## Benchmarks

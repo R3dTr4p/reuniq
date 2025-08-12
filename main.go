@@ -73,33 +73,34 @@ const (
 )
 
 type options struct {
-	inputPath       string
-	outputPath      string
-	clustersPath    string
-	seedPath        string
-	mode            modeType
-	threshold       float64
-	normalize       normalizeLevel
-	keep            keepPolicy
-	domainScope     domainScope
-	parallel        int
-	bufferBytes     int
-	excludeParams   []string
-	onlyParams      []string
-	quiet           bool
-	simhashBits     int
-	simhashShingle  int
-	structWeight    float64
-	noIDNA          bool
-	httpEqHttps     bool
-	version         bool
-	verbose         bool
-	dropExts        []string
-	dropB64ish      bool
-	dropGibberish   bool
-	presetClean     bool
-	progressEveryS  int
-	registrableFlag bool
+	inputPath         string
+	outputPath        string
+	clustersPath      string
+	clustersPairsPath string
+	seedPath          string
+	mode              modeType
+	threshold         float64
+	normalize         normalizeLevel
+	keep              keepPolicy
+	domainScope       domainScope
+	parallel          int
+	bufferBytes       int
+	excludeParams     []string
+	onlyParams        []string
+	quiet             bool
+	simhashBits       int
+	simhashShingle    int
+	structWeight      float64
+	noIDNA            bool
+	httpEqHttps       bool
+	version           bool
+	verbose           bool
+	dropExts          []string
+	dropB64ish        bool
+	dropGibberish     bool
+	presetClean       bool
+	progressEveryS    int
+	registrableFlag   bool
 }
 
 type stats struct {
@@ -167,8 +168,8 @@ func (s *shardedIndex) getShard(key string) *shard {
 }
 
 // addOrMerge inserts the urlInfo into the index, creating or merging clusters according to options.
-// Returns true if merged into existing cluster; false if created new cluster.
-func (s *shardedIndex) addOrMerge(u *urlInfo, o *options, st *stats, wantMembers bool) bool {
+// Returns (merged, representativeNorm, createdNew).
+func (s *shardedIndex) addOrMerge(u *urlInfo, o *options, st *stats, wantMembers bool) (bool, string, bool) {
 	sh := s.getShard(u.bucket)
 	sh.Lock()
 	defer sh.Unlock()
@@ -188,7 +189,7 @@ func (s *shardedIndex) addOrMerge(u *urlInfo, o *options, st *stats, wantMembers
 			if wantMembers {
 				c.members = append(c.members, u)
 			}
-			return true
+			return true, c.rep.norm, false
 		}
 	}
 	// Fallback: scan clusters for simhash/canonical proximity when enabled
@@ -203,7 +204,7 @@ func (s *shardedIndex) addOrMerge(u *urlInfo, o *options, st *stats, wantMembers
 			if (o.mode == modeHybrid || o.mode == modeStruct) && u.structSig == c.rep.structSig {
 				bs.byStruct[u.structSig] = c
 			}
-			return true
+			return true, c.rep.norm, false
 		}
 	}
 	// No merge found, create new cluster
@@ -217,7 +218,7 @@ func (s *shardedIndex) addOrMerge(u *urlInfo, o *options, st *stats, wantMembers
 		bs.byStruct[u.structSig] = newc
 	}
 	atomic.AddInt64(&st.clusters, 1)
-	return false
+	return false, newc.rep.norm, true
 }
 
 func chooseRepresentative(a, b *urlInfo, policy keepPolicy) *urlInfo {
@@ -790,10 +791,33 @@ func process(o *options, input io.Reader, repsOut io.Writer, clustersOut io.Writ
 	lines := make(chan string, o.parallel*4)
 	var wg sync.WaitGroup
 
+	// Optional streaming clusters pairs writer to avoid holding members in memory
+	var pairsCh chan string
+	var pairsWG sync.WaitGroup
+	if o.clustersPairsPath != "" {
+		f, err := os.Create(o.clustersPairsPath)
+		if err != nil {
+			return st, fmt.Errorf("open clusters-pairs: %w", err)
+		}
+		bw := bufio.NewWriterSize(f, 1<<20)
+		pairsCh = make(chan string, 8192)
+		pairsWG.Add(1)
+		go func() {
+			defer pairsWG.Done()
+			for s := range pairsCh {
+				_, _ = bw.WriteString(s)
+			}
+			_ = bw.Flush()
+			_ = f.Close()
+		}()
+	}
+
 	// periodic progress logger
-	var progressDone chan struct{}
+	var progressStop chan struct{}
+	var progressAck chan struct{}
 	if o.verbose && !o.quiet {
-		progressDone = make(chan struct{})
+		progressStop = make(chan struct{})
+		progressAck = make(chan struct{})
 		go func() {
 			interval := time.Duration(o.progressEveryS)
 			if interval <= 0 {
@@ -804,9 +828,10 @@ func process(o *options, input io.Reader, repsOut io.Writer, clustersOut io.Writ
 			prevLen := 0
 			for {
 				select {
-				case <-progressDone:
+				case <-progressStop:
 					// finish the in-place line
 					fmt.Fprint(os.Stderr, "\n")
+					close(progressAck)
 					return
 				case <-t.C:
 					msg := fmt.Sprintf("progress lines=%d parsed=%d skipped=%d clusters=%d merged=%d",
@@ -850,7 +875,15 @@ func process(o *options, input io.Reader, repsOut io.Writer, clustersOut io.Writ
 				continue
 			}
 			atomic.AddInt64(&st.linesParsed, 1)
-			index.addOrMerge(ui, o, &st, wantMembers)
+			merged, repNorm, created := index.addOrMerge(ui, o, &st, wantMembers)
+			if pairsCh != nil {
+				if created {
+					// Start a cluster block by emitting rep as its own member for completeness
+					pairsCh <- repNorm + "\t" + repNorm + "\n"
+				} else if merged {
+					pairsCh <- repNorm + "\t" + ui.norm + "\n"
+				}
+			}
 		}
 	}
 
@@ -876,16 +909,23 @@ func process(o *options, input io.Reader, repsOut io.Writer, clustersOut io.Writ
 
 	wg.Wait()
 
+	if pairsCh != nil {
+		close(pairsCh)
+		pairsWG.Wait()
+	}
+
 	// Emit reps
 	if err := emitOutputs(index, repsOut, clustersOut); err != nil {
-		if progressDone != nil {
-			close(progressDone)
+		if progressStop != nil {
+			close(progressStop)
+			<-progressAck
 		}
 		return st, err
 	}
 
-	if progressDone != nil {
-		close(progressDone)
+	if progressStop != nil {
+		close(progressStop)
+		<-progressAck
 	}
 	return st, nil
 }
@@ -1064,6 +1104,7 @@ func parseFlags() *options {
 	flag.BoolVar(&o.quiet, "quiet", false, "Suppress stats to stderr")
 	flag.StringVar(&o.clustersPath, "C", "", "Also write clusters (rep + members) to FILE (newline-separated blocks)")
 	flag.StringVar(&o.clustersPath, "clusters", "", "Also write clusters (rep + members) to FILE (newline-separated blocks)")
+	flag.StringVar(&o.clustersPairsPath, "clusters-pairs", "", "Stream cluster membership as rep\tmember lines to FILE (low memory)")
 	flag.StringVar(&o.seedPath, "S", "", "Preload known URLs to bias cluster representatives")
 	flag.StringVar(&o.seedPath, "seed", "", "Preload known URLs to bias cluster representatives")
 	flag.IntVar(&o.simhashBits, "simhash-bits", 64, "SimHash bits: 64 or 128 (default: 64)")
