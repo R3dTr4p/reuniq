@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/sha1"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -102,6 +103,7 @@ type options struct {
 	progressEveryS    int
 	registrableFlag   bool
 	userFlags         map[string]bool
+	jsonOutput        bool
 }
 
 type stats struct {
@@ -923,7 +925,7 @@ func process(o *options, input io.Reader, repsOut io.Writer, clustersOut io.Writ
 	}
 
 	// Emit reps
-	if err := emitOutputs(index, repsOut, clustersOut); err != nil {
+	if err := emitOutputs(index, repsOut, clustersOut, o); err != nil {
 		if progressStop != nil {
 			close(progressStop)
 			<-progressAck
@@ -1030,19 +1032,35 @@ func feedReader(r io.Reader, o *options, index *shardedIndex, st *stats, wantMem
 	return nil
 }
 
-func emitOutputs(index *shardedIndex, repsOut io.Writer, clustersOut io.Writer) error {
+func emitOutputs(index *shardedIndex, repsOut io.Writer, clustersOut io.Writer, o *options) error {
 	bufReps := bufio.NewWriter(repsOut)
 	var bufClus *bufio.Writer
 	if clustersOut != nil {
 		bufClus = bufio.NewWriter(clustersOut)
 	}
+	var enc *json.Encoder
+	if o.jsonOutput {
+		enc = json.NewEncoder(bufReps)
+		enc.SetEscapeHTML(false)
+	}
 	for _, sh := range index.shards {
 		sh.Lock()
 		for _, bs := range sh.buckets {
 			for _, c := range bs.clusters {
-				if _, err := bufReps.WriteString(c.rep.norm + "\n"); err != nil {
-					sh.Unlock()
-					return err
+				if o.jsonOutput {
+					rec := map[string]string{
+						"rep":    c.rep.norm,
+						"bucket": c.rep.bucket,
+					}
+					if err := enc.Encode(rec); err != nil {
+						sh.Unlock()
+						return err
+					}
+				} else {
+					if _, err := bufReps.WriteString(c.rep.norm + "\n"); err != nil {
+						sh.Unlock()
+						return err
+					}
 				}
 				if bufClus != nil {
 					// write block: rep then each member, then blank line
@@ -1134,6 +1152,8 @@ func parseFlags() *options {
 	flag.BoolVar(&o.presetClean, "preset", true, "Alias of --preset-clean (enabled by default)")
 	// Convenience flag to cluster within registrable (eTLD+1) instead of host
 	flag.BoolVar(&o.registrableFlag, "registrable-scope", false, "Cluster within registrable domain (eTLD+1); overrides default host scope unless -d is provided")
+	// Output format
+	flag.BoolVar(&o.jsonOutput, "json", false, "Emit representatives as JSON Lines (one JSON object per line)")
 	flag.Parse()
 
 	// Track which flags user actually set
