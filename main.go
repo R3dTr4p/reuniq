@@ -1092,9 +1092,9 @@ func parseFlags() *options {
 	norm := string(normStrict)
 	flag.StringVar(&norm, "n", norm, "Normalization: none|loose|strict (default: strict)")
 	flag.StringVar(&norm, "normalize", norm, "Normalization: none|loose|strict (default: strict)")
-	keep := string(keepRichest)
-	flag.StringVar(&keep, "k", keep, "Which URL to keep per cluster: first|shortest|longest|richest|lexi (default: richest)")
-	flag.StringVar(&keep, "keep", keep, "Which URL to keep per cluster: first|shortest|longest|richest|lexi (default: richest)")
+	keep := string(keepFirst)
+	flag.StringVar(&keep, "k", keep, "Which URL to keep per cluster: first|shortest|longest|richest|lexi (default: first)")
+	flag.StringVar(&keep, "keep", keep, "Which URL to keep per cluster: first|shortest|longest|richest|lexi (default: first)")
 	ds := string(scopeHost)
 	flag.StringVar(&ds, "d", ds, "Domain scope: all|registrable|host (default: host)")
 	flag.StringVar(&ds, "domain-scope", ds, "Domain scope: all|registrable|host (default: host)")
@@ -1286,6 +1286,22 @@ func main() {
 			fmt.Fprintln(os.Stderr, "  reuniq -i urls.txt > reps.txt")
 			fmt.Fprintln(os.Stderr, "  gau example.com | reuniq > reps.txt")
 			os.Exit(2)
+		}
+	}
+
+	// Advisory: if user only provided minimal I/O flags (e.g., just -i), print a tip about presets
+	if !o.quiet {
+		minimal := true
+		for name := range o.userFlags {
+			switch name {
+			case "i", "input", "o", "output", "q", "quiet", "C", "clusters", "clusters-pairs", "v", "verbose", "progress-interval":
+				// ignore
+			default:
+				minimal = false
+			}
+		}
+		if minimal {
+			fmt.Fprintln(os.Stderr, "Note: running with baseline defaults (no extra filters). For stronger dedup, consider --preset or adding flags like -x, --drop-ext, --registrable-scope.")
 		}
 	}
 
