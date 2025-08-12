@@ -65,6 +65,7 @@ Key flags:
   - `-o, --output FILE` output (default: stdout)
   - `-C, --clusters FILE` also write clusters (rep + members) to file (newline-separated blocks) — memory heavy on huge lists; may crash due to RAM
   - `--clusters-pairs FILE` stream cluster membership as `rep\tmember` lines (low memory, recommended for very large inputs)
+  - `--json` emit representatives as JSON Lines to stdout (fields: `rep`, `bucket`)
 - Modes
   - `-m, --mode MODE` `exact|canonical|struct|simhash|hybrid` (default: `hybrid`)
   - `-t, --threshold FLOAT` similarity threshold (mode-dependent; default 0.12 for SimHash, 0.30 for Jaccard)
@@ -194,4 +195,4 @@ PRs welcome. If you have real-world corpora, tuning ideas, or feature requests, 
 - Made by [R3dTr4p](https://x.com/R3dTr4p).
 - Implementation in Go ≥1.21
 
-Feel free to collaborate with PRs =D
+Feel free to collaborate with PRs =)
