@@ -101,6 +101,7 @@ type options struct {
 	presetClean       bool
 	progressEveryS    int
 	registrableFlag   bool
+	userFlags         map[string]bool
 }
 
 type stats struct {
@@ -1127,9 +1128,10 @@ func parseFlags() *options {
 	flag.StringVar(&drops, "drop-ext", drops, "Comma-separated file extensions to drop when they are the path suffix (e.g., gif,jpg,png)")
 	flag.BoolVar(&o.dropB64ish, "drop-b64ish", false, "Drop URLs whose path contains base64-ish long tokens")
 	flag.BoolVar(&o.dropGibberish, "drop-gibberish", false, "Drop URLs whose path contains long alnum+ tokens (likely gibberish)")
-	// Preset for quick use with recommended defaults (generic)
-	flag.BoolVar(&o.presetClean, "preset-clean", false, "Apply recommended defaults for large recon lists (alias for a set of flags)")
-	flag.BoolVar(&o.presetClean, "preset", false, "Alias of --preset-clean (recommended defaults)")
+	// Preset: enabled by default; user flags override
+	o.presetClean = true
+	flag.BoolVar(&o.presetClean, "preset-clean", true, "Apply recommended defaults (enabled by default)")
+	flag.BoolVar(&o.presetClean, "preset", true, "Alias of --preset-clean (enabled by default)")
 	// Convenience flag to cluster within registrable (eTLD+1) instead of host
 	flag.BoolVar(&o.registrableFlag, "registrable-scope", false, "Cluster within registrable domain (eTLD+1); overrides default host scope unless -d is provided")
 	flag.Parse()
@@ -1145,6 +1147,7 @@ func parseFlags() *options {
 		}
 		return false
 	}
+	o.userFlags = visited
 
 	o.mode = modeType(strings.ToLower(mode))
 	o.normalize = normalizeLevel(strings.ToLower(norm))
@@ -1190,7 +1193,6 @@ func parseFlags() *options {
 		}
 		if !provided("X", "only-params") {
 			// leave user's only-params if provided; otherwise ensure nil so exclude applies
-			// no action needed if user set it
 		}
 		if !provided("http-eq-https") {
 			o.httpEqHttps = true
@@ -1244,6 +1246,14 @@ func openOptional(path string, w bool) (*os.File, error) {
 	return os.Open(path)
 }
 
+func stdinIsTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return true
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
 func main() {
 	o := parseFlags()
 	if o.version {
@@ -1253,6 +1263,30 @@ func main() {
 
 	if !o.quiet {
 		fmt.Fprint(os.Stderr, banner)
+	}
+
+	// Guard: if no input provided and stdin is a TTY, exit with guidance instead of hanging
+	if o.inputPath == "" && stdinIsTTY() {
+		// Count user-provided flags
+		numFlags := len(o.userFlags)
+		// Case 1: no flags at all
+		if numFlags == 0 {
+			fmt.Fprintln(os.Stderr, "Error: no flags provided and no input on stdin.")
+			fmt.Fprintln(os.Stderr, "Usage: provide an input file with -i or pipe URLs. Preset defaults are applied automatically.")
+			fmt.Fprintln(os.Stderr, "Examples:")
+			fmt.Fprintln(os.Stderr, "  reuniq -i urls.txt > reps.txt")
+			fmt.Fprintln(os.Stderr, "  cat urls.txt | reuniq > reps.txt")
+			fmt.Fprintln(os.Stderr, "See -h for full flag info.")
+			os.Exit(2)
+		}
+		// Case 2: flags given but none supply input (-i) and stdin is a TTY
+		if !o.userFlags["i"] && !o.userFlags["input"] {
+			fmt.Fprintln(os.Stderr, "Error: no input source detected. Add -i FILE or pipe URLs via stdin.")
+			fmt.Fprintln(os.Stderr, "Examples:")
+			fmt.Fprintln(os.Stderr, "  reuniq -i urls.txt > reps.txt")
+			fmt.Fprintln(os.Stderr, "  gau example.com | reuniq > reps.txt")
+			os.Exit(2)
+		}
 	}
 
 	// If a positional file is provided, prefer it for input unless -i specified
