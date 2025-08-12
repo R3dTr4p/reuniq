@@ -1083,6 +1083,18 @@ func parseFlags() *options {
 	flag.BoolVar(&o.presetClean, "preset", false, "Alias of --preset-clean (recommended defaults)")
 	flag.Parse()
 
+	// Track which flags user actually set
+	visited := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+	provided := func(names ...string) bool {
+		for _, n := range names {
+			if visited[n] {
+				return true
+			}
+		}
+		return false
+	}
+
 	o.mode = modeType(strings.ToLower(mode))
 	o.normalize = normalizeLevel(strings.ToLower(norm))
 	o.keep = keepPolicy(strings.ToLower(keep))
@@ -1108,22 +1120,49 @@ func parseFlags() *options {
 		o.parallel = 1
 	}
 
-	// Apply preset defaults (overrides conflicting flags)
+	// Apply preset defaults (respect user-provided flags; only set when not explicitly provided)
 	if o.presetClean {
-		o.mode = modeHybrid
-		o.normalize = normStrict
-		o.domainScope = scopeRegistrable
-		o.excludeParams = []string{"utm_*", "gclid", "fbclid", "_ga", "_gid", "ref", "sid", "session", "phpsessid", "JSESSIONID"}
-		o.onlyParams = nil
-		o.httpEqHttps = true
-		o.parallel = runtime.NumCPU()
-		o.bufferBytes = 1 << 22
-		o.dropExts = []string{"gif"}
-		o.dropB64ish = true
-		o.dropGibberish = true
-		o.verbose = true
-		if o.progressEveryS <= 0 {
-			o.progressEveryS = 1
+		if !provided("m", "mode") {
+			o.mode = modeHybrid
+		}
+		if !provided("n", "normalize") {
+			o.normalize = normStrict
+		}
+		if !provided("d", "domain-scope") {
+			o.domainScope = scopeRegistrable
+		}
+		if !provided("x", "exclude-params") && len(o.excludeParams) == 0 {
+			o.excludeParams = []string{"utm_*", "gclid", "fbclid", "_ga", "_gid", "ref", "sid", "session", "phpsessid", "JSESSIONID"}
+		}
+		if !provided("X", "only-params") {
+			// leave user's only-params if provided; otherwise ensure nil so exclude applies
+			// no action needed if user set it
+		}
+		if !provided("http-eq-https") {
+			o.httpEqHttps = true
+		}
+		if !provided("p", "parallel") {
+			o.parallel = runtime.NumCPU()
+		}
+		if !provided("B", "buffer-bytes") {
+			o.bufferBytes = 1 << 22
+		}
+		if !provided("drop-ext") && len(o.dropExts) == 0 {
+			o.dropExts = []string{"gif"}
+		}
+		if !provided("drop-b64ish") {
+			o.dropB64ish = true
+		}
+		if !provided("drop-gibberish") {
+			o.dropGibberish = true
+		}
+		if !provided("v", "verbose") {
+			o.verbose = true
+		}
+		if !provided("progress-interval") {
+			if o.progressEveryS <= 0 {
+				o.progressEveryS = 1
+			}
 		}
 	}
 	return o
