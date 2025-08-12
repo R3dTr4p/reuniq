@@ -525,7 +525,14 @@ func buildURLInfo(raw string, o *options, seeded bool) (*urlInfo, error) {
 	}
 
 	firstSeg := firstPathSegment(u.Path)
-	bucket := scope + "|" + firstSeg
+	// Do not merge across subdomains/domains for the base path "/"
+	// Root is extremely common and should not collapse different hosts when using
+	// broader scopes like registrable or all. For empty first segment, narrow bucket to FQDN.
+	bucketScope := scope
+	if firstSeg == "" {
+		bucketScope = strings.ToLower(host)
+	}
+	bucket := bucketScope + "|" + firstSeg
 
 	// struct signature and optional set
 	structSig, structSet, depth := structSignature(u, o)
