@@ -37,6 +37,16 @@ reuniq --registrable-scope -i big_urls.txt > unique.txt
 go install github.com/R3dTr4p/reuniq@latest
 ```
 
+Alternative (build from source):
+
+```bash
+git clone https://github.com/R3dTr4p/reuniq && cd reuniq
+# build a local binary
+go build -o reuniq
+# or install from the local repo
+go install ./...
+```
+
 ## Usage
 
 ```bash

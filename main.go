@@ -793,6 +793,17 @@ func readLines(r io.Reader, bufSize int, out chan<- string) error {
 	return nil
 }
 
+func formatElapsedHHMMSS(d time.Duration) string {
+	total := int64(d.Seconds())
+	if total < 0 {
+		total = 0
+	}
+	h := total / 3600
+	m := (total % 3600) / 60
+	s := total % 60
+	return fmt.Sprintf("%02d.%02d.%02d", h, m, s)
+}
+
 func process(o *options, input io.Reader, repsOut io.Writer, clustersOut io.Writer) (stats, error) {
 	st := stats{}
 	wantMembers := clustersOut != nil
@@ -828,6 +839,7 @@ func process(o *options, input io.Reader, repsOut io.Writer, clustersOut io.Writ
 	if o.verbose && !o.quiet {
 		progressStop = make(chan struct{})
 		progressAck = make(chan struct{})
+		startAt := time.Now()
 		go func() {
 			interval := time.Duration(o.progressEveryS)
 			if interval <= 0 {
@@ -844,12 +856,13 @@ func process(o *options, input io.Reader, repsOut io.Writer, clustersOut io.Writ
 					close(progressAck)
 					return
 				case <-t.C:
-					msg := fmt.Sprintf("progress lines=%d parsed=%d skipped=%d clusters=%d merged=%d",
+					elapsedFmt := formatElapsedHHMMSS(time.Since(startAt))
+					msg := fmt.Sprintf("progress lines=%d parsed=%d skipped=%d clusters=%d merged=%d elapsed=%s",
 						atomic.LoadInt64(&st.linesRead),
 						atomic.LoadInt64(&st.linesParsed),
 						atomic.LoadInt64(&st.linesSkipped),
 						atomic.LoadInt64(&st.clusters),
-						atomic.LoadInt64(&st.merged))
+						atomic.LoadInt64(&st.merged), elapsedFmt)
 					// overwrite same line using carriage return
 					padding := 0
 					if prevLen > len(msg) {
