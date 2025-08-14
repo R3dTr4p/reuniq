@@ -13,44 +13,28 @@ Recon data is messy: tracking params, random IDs, dates, UUIDs, base64-ish blobs
 
 ## TL;DR (the command I usually use)
 
-If you don’t want to read everything, here’s a solid default that works great for big lists.
-Use the preset flag for brevity (defaults to host scope):
+If you don’t want to read everything, here’s a solid default that works great for big lists. Preset defaults are applied automatically (host scope). Any flags you pass override the preset.
 
 ```bash
-# Preset alias (same behavior as the long form below)
-reuniq --preset-clean -i big_urls.txt > unique.txt
-# or shorter alias
-reuniq --preset -i big_urls.txt > unique.txt
+reuniq -i big_urls.txt > unique.txt
 ```
 
-To cluster across subdomains under the same eTLD+1, add:
+JSON output (one JSON object per line):
 
 ```bash
-reuniq --preset --registrable-scope -i big_urls.txt > unique.txt
+reuniq -i big_urls.txt --json > reps.jsonl
 ```
 
-Equivalent long form:
+To cluster across subdomains under the same eTLD+1:
 
 ```bash
-reuniq -i big_urls.txt -m hybrid -n strict -d host \
-  -x "utm_*,gclid,fbclid,_ga,_gid,ref,sid,session,phpsessid,JSESSIONID" \
-  --http-eq-https -p $(nproc) -B $((1<<22)) \
-  --drop-ext gif --drop-b64ish --drop-gibberish \
-  > unique.txt
+reuniq --registrable-scope -i big_urls.txt > unique.txt
 ```
-
-- Hybrid mode: buckets by domain + first path segment, merges by structure and SimHash
-- Strict normalization: sort params, drop fragments, IDNA host, resolve dot segments
-- Drop common tracking params; treat http/https as equivalent
-- Filter out paths ending in .gif (but keep ?x=.gif in queries), and obvious gibberish/base64-ish path segments
-- Use all CPU cores, large read buffer for very long lines
 
 ## Install
 
 ```bash
-go install ./...
-# or
-go build -o reuniq
+go install github.com/R3dTr4p/reuniq@latest
 ```
 
 ## Usage
